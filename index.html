@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secret Santa Spin</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=DM+Sans:wght@400;600;700&display=swap">
+<style>
+  :root { --bg:#fbf4e6; --surface:#fffaf0; --fg:#2a1d17; --muted:#7a6a5e; --line:#e6d8c0; --red:#b3202f; --pine:#1d5b3c; --gold:#d79b1d; --on:#fffaf0; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f2519; --surface:#16351f; --fg:#fbf1dc; --muted:#a9bba9; --line:#2b5237; --red:#d6384a; --pine:#2c8a5a; --gold:#f2bf4a; color-scheme:dark; } }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font-family:"DM Sans",system-ui,sans-serif; margin:0; padding:28px 16px 48px; }
+  main { max-width:520px; margin:0 auto; display:flex; flex-direction:column; gap:20px; text-align:center; }
+  h1 { font-family:"Young Serif",Georgia,serif; font-weight:400; font-size:2.2rem; margin:0; }
+  .sub { margin:0; color:var(--muted); }
+  .controls { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  select, button { font:inherit; font-size:1.05rem; padding:12px 18px; border-radius:10px; border:1px solid var(--line); }
+  select { background:var(--surface); color:var(--fg); min-width:200px; }
+  button { background:var(--red); color:var(--on); font-weight:700; border-color:transparent; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--fg); border-color:var(--line); font-weight:600; font-size:.95rem; padding:9px 14px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  :focus-visible { outline:3px solid var(--gold); outline-offset:2px; }
+  .wheel-wrap { position:relative; width:min(86vw,360px); aspect-ratio:1; margin:14px auto 4px; }
+  canvas { width:100%; height:100%; border-radius:50%; border:6px solid var(--gold); display:block; background:var(--surface); }
+  canvas.spin { transition:transform 5s cubic-bezier(.12,.7,.1,1); }
+  .pointer { position:absolute; top:-16px; left:50%; transform:translateX(-50%); width:0; height:0; z-index:2;
+    border-left:15px solid transparent; border-right:15px solid transparent; border-top:30px solid var(--fg); }
+  #result { min-height:84px; font-size:1.1rem; }
+  #result b { display:block; font-family:"Young Serif",Georgia,serif; font-weight:400; font-size:2.3rem; color:var(--red); margin-top:4px; }
+  .panel { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; text-align:left; }
+  .panel h2 { margin:0 0 8px; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { padding:5px 12px; border-radius:999px; background:var(--pine); color:var(--on); font-weight:600; }
+  .none { color:var(--muted); margin:0; }
+  .admin .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .admin input { font:inherit; padding:9px 12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  #peek { margin:10px 0 0; padding-left:18px; }
+  #status { color:var(--muted); font-size:.9rem; min-height:1.2em; }
+  .fall { position:fixed; top:-30px; pointer-events:none; transition:transform 3s linear, opacity 3s; z-index:20; }
+  @media (prefers-reduced-motion: reduce) { canvas.spin { transition-duration:.01s; } .fall { display:none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Secret Santa Spin</h1>
+  <p class="sub">Pick your name, spin the wheel, keep it to yourself.</p>
+
+  <div class="controls">
+    <select id="who" aria-label="Who are you?"><option value="">Who are you?</option></select>
+    <button id="spin" disabled>Spin</button>
+  </div>
+
+  <div class="wheel-wrap"><div class="pointer"></div><canvas id="wheel" width="720" height="720"></canvas></div>
+  <div id="result" aria-live="polite"></div>
+  <div id="status"></div>
+
+  <section class="panel">
+    <h2>Already drawn</h2>
+    <div id="drawn" class="chips"></div>
+  </section>
+
+  <section class="panel admin" id="admin" hidden>
+    <h2>Admin (Nicole)</h2>
+    <div class="row" id="loginRow">
+      <input id="pin" type="password" placeholder="Admin passcode" aria-label="Admin passcode">
+      <button class="ghost" id="login">Unlock</button>
+    </div>
+    <div class="row" id="adminRow" hidden>
+      <button class="ghost" id="peekBtn">Show who has who</button>
+      <button id="reset">Reset everything</button>
+    </div>
+    <ul id="peek" hidden></ul>
+  </section>
+</main>
+
+<script>
+/* ============ SETTINGS (edit these) ============ */
+const NAMES = ["Taine","Ryan","Deon","Theresa","Nicole","Lelanie"];
+const ADMIN_PASSCODE = "santa2026";          // change this! Open the page with #admin on the end to see the admin panel.
+const FIREBASE_URL = "https://secret-santa-80098-default-rtdb.europe-west1.firebasedatabase.app";                  // e.g. "https://my-santa-default-rtdb.firebaseio.com"  (see README). Leave empty for no-setup mode.
+// Only used when FIREBASE_URL is empty: a fixed draw (nobody gets themselves, nobody is picked twice).
+const FIXED = { Taine:"Theresa", Ryan:"Nicole", Deon:"Taine", Theresa:"Lelanie", Nicole:"Deon", Lelanie:"Ryan" };
+/* ================================================ */
+
+const COLORS = ["#b3202f","#1d5b3c","#c9781a","#255b8a","#7b3f98","#8a7410"];
+const $ = id => document.getElementById(id);
+const who = $("who"), spinBtn = $("spin"), result = $("result"), statusEl = $("status"), canvas = $("wheel");
+const ctx = canvas.getContext("2d");
+const ONLINE = !!FIREBASE_URL;
+const API = FIREBASE_URL.replace(/\/$/, "");
+
+let picks = {};          // { person: recipient }
+let spinning = false, rotation = 0, unlocked = false, showPeek = false;
+
+NAMES.forEach(n => who.add(new Option(n, n)));
+try { who.value = localStorage.getItem("ss-name") || ""; } catch (e) {}
+if (location.hash === "#admin") $("admin").hidden = false;
+
+/* ---------- storage ---------- */
+async function load() {
+  if (ONLINE) {
+    const r = await fetch(API + "/picks.json", { cache: "no-store" });
+    picks = (await r.json()) || {};
+  } else {
+    let mine = {};
+    try { mine = JSON.parse(localStorage.getItem("ss-picks") || "{}"); } catch (e) {}
+    picks = mine;                       // only this phone's own result is known
+  }
+}
+async function claim(me, to) {          // true if `to` was free and is now taken by `me`
+  if (!ONLINE) return true;
+  const r = await fetch(API + "/taken/" + encodeURIComponent(to) + ".json", {
+    method: "PUT", headers: { "if-match": "null_etag" }, body: JSON.stringify(me) });
+  return r.ok;
+}
+async function save(me, to) {
+  if (ONLINE) {
+    await fetch(API + "/picks/" + encodeURIComponent(me) + ".json", { method: "PUT", body: JSON.stringify(to) });
+  } else {
+    picks[me] = to;
+    try { localStorage.setItem("ss-picks", JSON.stringify(picks)); } catch (e) {}
+  }
+}
+async function takenNames() {
+  if (!ONLINE) return Object.values(picks);
+  const r = await fetch(API + "/taken.json", { cache: "no-store" });
+  return Object.keys((await r.json()) || {});
+}
+
+/* ---------- wheel ---------- */
+function drawWheel(list) {
+  const c = canvas.width / 2, r = c - 6, W = canvas.width;
+  ctx.clearRect(0, 0, W, W);
+  if (!list.length) {
+    ctx.beginPath(); ctx.arc(c, c, r, 0, 7); ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--surface") || "#fffaf0"; ctx.fill();
+    ctx.fillStyle = "#7a6a5e"; ctx.font = "bold 34px DM Sans, system-ui"; ctx.textAlign = "center";
+    ctx.fillText("No names left", c, c + 10); return;
+  }
+  const seg = 360 / list.length;
+  list.forEach((n, i) => {
+    const a0 = (i * seg - 90) * Math.PI / 180, a1 = ((i + 1) * seg - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.arc(c, c, r, a0, a1); ctx.closePath();
+    ctx.fillStyle = COLORS[NAMES.indexOf(n) % COLORS.length]; ctx.fill();
+    ctx.strokeStyle = "#fffaf0"; ctx.lineWidth = 4; ctx.stroke();
+    ctx.save(); ctx.translate(c, c); ctx.rotate((a0 + a1) / 2);
+    ctx.fillStyle = "#fffaf0"; ctx.font = "bold 44px DM Sans, system-ui"; ctx.textAlign = "right";
+    ctx.fillText(n, r - 30, 15); ctx.restore();
+  });
+  ctx.beginPath(); ctx.arc(c, c, 30, 0, 7); ctx.fillStyle = "#fffaf0"; ctx.fill();
+}
+
+function remainingFor(me) {
+  const taken = new Set(Object.values(picks));
+  return NAMES.filter(n => n !== me && !taken.has(n));
+}
+
+function render() {
+  if (spinning) return;
+  const me = who.value, mine = picks[me];
+  const taken = NAMES.filter(n => Object.values(picks).includes(n));
+  const cand = ONLINE ? remainingFor(me) : NAMES.filter(n => n !== me && !(taken.includes(n)));
+  const box = $("drawn"); box.innerHTML = "";
+  if (!ONLINE) {
+    const p = document.createElement("p"); p.className = "none";
+    p.textContent = taken.length ? "" : "Names you have drawn on this phone will show here.";
+    box.append(p);
+  } else if (!taken.length) {
+    const p = document.createElement("p"); p.className = "none"; p.textContent = "No names drawn yet."; box.append(p);
+  }
+  taken.forEach(n => { const s = document.createElement("span"); s.className = "chip"; s.textContent = n; box.append(s); });
+
+  drawWheel(ONLINE ? cand : (mine ? NAMES.filter(n => n !== me && n !== mine) : NAMES.filter(n => n !== me)));
+  canvas.classList.remove("spin"); canvas.style.transform = "rotate(0deg)"; rotation = 0;
+  spinBtn.disabled = !me || !!mine || (ONLINE && !cand.length);
+  who.disabled = false;
+  if (mine) { result.innerHTML = me + ", you drew:<b></b>"; result.querySelector("b").textContent = mine; }
+  else result.textContent = (ONLINE && me && !cand.length) ? "No names left to draw." : "";
+
+  const peek = $("peek"); peek.hidden = !(unlocked && showPeek); peek.innerHTML = "";
+  Object.entries(picks).forEach(([a, b]) => { const li = document.createElement("li"); li.textContent = a + " has " + b; peek.append(li); });
+  $("peekBtn").textContent = showPeek ? "Hide who has who" : "Show who has who";
+}
+
+who.addEventListener("change", () => { try { localStorage.setItem("ss-name", who.value); } catch (e) {} render(); });
+
+/* ---------- spinning ---------- */
+function choose(me) {
+  if (!ONLINE) return FIXED[me];
+  const taken = new Set(Object.values(picks));
+  const cand = NAMES.filter(n => n !== me && !taken.has(n));
+  const spunAfter = new Set([...Object.keys(picks), me]);
+  const ok = cand.filter(c => {
+    const people = NAMES.filter(n => !spunAfter.has(n));
+    const left = NAMES.filter(n => !taken.has(n) && n !== c);
+    return !(people.length === 1 && left.length === 1 && people[0] === left[0]);
+  });
+  const pool = ok.length ? ok : cand;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+spinBtn.addEventListener("click", async () => {
+  const me = who.value;
+  if (!me || spinning) return;
+  spinning = true; spinBtn.disabled = who.disabled = true; result.textContent = "Spinning..."; statusEl.textContent = "";
+  try {
+    let to = null, list = null;
+    for (let i = 0; i < 6 && !to; i++) {
+      await load();
+      if (picks[me]) { spinning = false; render(); return; }
+      const t = choose(me);
+      if (!t) throw new Error("none");
+      if (await claim(me, t)) { to = t; list = ONLINE ? remainingFor(me) : NAMES.filter(n => n !== me); }
+    }
+    if (!to) throw new Error("busy");
+    await save(me, to);
+    drawWheel(list);
+    const seg = 360 / list.length, idx = list.indexOf(to);
+    const jitter = (Math.random() - 0.5) * seg * 0.6;
+    const cur = ((rotation % 360) + 360) % 360;
+    const want = (360 - (idx + 0.5) * seg + jitter + 360) % 360;
+    rotation += 360 * 6 + ((want - cur + 360) % 360);
+    canvas.classList.add("spin");
+    requestAnimationFrame(() => { canvas.style.transform = "rotate(" + rotation + "deg)"; });
+    await new Promise(r => setTimeout(r, 5300));
+    confetti();
+    await load();
+  } catch (e) {
+    statusEl.textContent = "Could not complete the draw. Check your connection and try again.";
+  }
+  spinning = false; render();
+});
+
+function confetti() {
+  for (let i = 0; i < 40; i++) {
+    const d = document.createElement("div"); d.className = "fall";
+    d.textContent = ["🎄","⭐","❄️","🎁"][i % 4];
+    d.style.left = Math.random() * 100 + "vw"; d.style.fontSize = 16 + Math.random() * 14 + "px";
+    document.body.append(d);
+    requestAnimationFrame(() => { d.style.transform = "translateY(110vh) rotate(" + Math.random() * 540 + "deg)"; d.style.opacity = 0; });
+    setTimeout(() => d.remove(), 3500);
+  }
+}
+
+/* ---------- admin ---------- */
+$("login").addEventListener("click", () => {
+  if ($("pin").value === ADMIN_PASSCODE) { unlocked = true; $("loginRow").hidden = true; $("adminRow").hidden = false; render(); }
+  else statusEl.textContent = "Wrong passcode.";
+});
+$("peekBtn").addEventListener("click", () => { showPeek = !showPeek; render(); });
+let armed = false;
+$("reset").addEventListener("click", async () => {
+  const b = $("reset");
+  if (!armed) { armed = true; b.textContent = "Tap again to confirm reset"; setTimeout(() => { armed = false; b.textContent = "Reset everything"; }, 4000); return; }
+  armed = false; b.textContent = "Reset everything";
+  try {
+    if (ONLINE) await fetch(API + "/.json", { method: "DELETE" });
+    try { localStorage.removeItem("ss-picks"); } catch (e) {}
+    picks = {};
+    statusEl.textContent = ONLINE ? "Reset done for everyone." : "Reset done on this phone only (no online database set up).";
+    render();
+  } catch (e) { statusEl.textContent = "Reset failed."; }
+});
+
+/* ---------- start ---------- */
+(async function () {
+  try { await load(); } catch (e) { statusEl.textContent = "Could not reach the draw. Check your connection."; }
+  render();
+  if (ONLINE) setInterval(async () => { if (!spinning) { try { await load(); render(); } catch (e) {} } }, 5000);
+})();
+</script>
+</body>
+</html>
